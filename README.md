@@ -19,18 +19,27 @@ Small full-stack demo of ArcGIS services:
 
 ```
 browser ──► Vite (dev) / Express (prod)
-             ├─ /api/config  ─► basemap key (browser-safe)
+             ├─ /api/token   ─► short-lived map token (OAuth app auth, ~2 h)
              ├─ /api/places  ─► ArcGIS World Geocoder  (server key)
              └─ /api/route   ─► ArcGIS Route_World     (server key)
 ```
 
-Service key stays on the server. The browser only sees the basemap key, which you restrict by referrer.
+### Credential model
+
+No long-lived credential reaches the browser.
+
+- **Geocoding and routing:** `ARCGIS_API_KEY` is only used inside Express. The browser calls `/api/places` and `/api/route`; it never sees the key.
+- **Basemap:** the map SDK must send a credential with each tile request, so the browser needs *something*. The server holds `ARCGIS_CLIENT_ID` and `ARCGIS_CLIENT_SECRET`, exchanges them for an access token (`grant_type=client_credentials`, 2-hour expiry), caches it, and gives the browser only that token via `/api/token`. The client refreshes it before it expires. A leaked token stops working within 2 hours; the client secret never leaves the server.
+- **Scope:** give the OAuth credentials the Basemaps privilege only, so the browser token cannot geocode or route.
+
+This is Esri's recommended pattern for public apps without user sign-in ("app authentication").
 
 ## Project layout
 
 ```
 server/index.js     Express app, routes, error handling
 server/arcgis.js    ArcGIS REST calls (geocode, route)
+server/token.js     OAuth app token: fetch, cache, refresh
 client/index.html   Page shell
 client/src/main.ts  UI wiring: search, results, route form
 client/src/map.ts   ArcGIS map layer code (prototype, swap to MapLibre later)
@@ -43,11 +52,12 @@ vite.config.ts      Client root, build output, dev proxy
 ## 1. Get ArcGIS keys (free developer plan)
 
 1. Sign up at https://developers.arcgis.com (free developer account).
-2. Create two API keys in the **API Keys** section:
-   - **Server key** → `ARCGIS_API_KEY`. Used for geocoding and routing. Keep secret.
-   - **Basemap key** → `ARCGIS_BASEMAP_API_KEY`. Add an HTTP referrer restriction for your site (for example `http://localhost:5173/*` and your deployed URL).
-3. Enable the privileges the keys need: basemap, geocoding, routing.
-4. Check current free credit limits on the pricing page before the showcase.
+2. Create two developer credentials (Content → New item → Developer credentials):
+   - **API key credentials** → `ARCGIS_API_KEY`. Privileges: Geocoding, Routing. No referrer restriction (server calls send no referrer). Keep secret.
+   - **OAuth 2.0 credentials → For app authentication** → `ARCGIS_CLIENT_ID` and `ARCGIS_CLIENT_SECRET`. Privilege: Basemaps only. Keep the secret secret.
+3. Check current free credit limits on the pricing page before the showcase.
+
+> Referrer gotcha: if you use a referrer-restricted API key, ArcGIS reports a referrer mismatch as `498 Token Invalid`, not as a referrer error. The OAuth app flow avoids this.
 
 ## 2. Run locally
 
@@ -90,8 +100,8 @@ GitHub Pages cannot run the Express server, so deploy the whole app as one Node 
 3. Settings:
    - Build command: `npm install && npm run build`
    - Start command: `npm start`
-4. Add environment variables `ARCGIS_API_KEY` and `ARCGIS_BASEMAP_API_KEY`. Render sets `PORT` automatically.
-5. Add the Render URL (for example `https://<name>.onrender.com/*`) to the basemap key's referrer list.
+4. Add environment variables `ARCGIS_API_KEY`, `ARCGIS_CLIENT_ID`, `ARCGIS_CLIENT_SECRET`. Render sets `PORT` automatically.
+5. Remove `ARCGIS_BASEMAP_API_KEY` if it is still set, so no long-lived key is served to the browser.
 
 Free instances sleep after inactivity, so the first request can be slow.
 

@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { geocodePincode, solveRoute, UpstreamError } from './arcgis.js';
+import { getAppToken, hasAppCredentials } from './token.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(__dirname, '..', 'dist');
@@ -11,10 +12,30 @@ const PORT = Number(process.env.PORT) || 3001;
 const app = express();
 app.use(express.json({ limit: '10kb' }));
 
-// Public config for the browser. Only the basemap key, which must be
-// referrer-restricted in the ArcGIS dashboard. Service key stays server-side.
-app.get('/api/config', (_req, res) => {
-  res.json({ basemapApiKey: process.env.ARCGIS_BASEMAP_API_KEY ?? '' });
+// Map token for the browser. Preferred: a short-lived OAuth app token, so no
+// long-lived credential reaches the client. Fallback (transition only): the
+// referrer-restricted ARCGIS_BASEMAP_API_KEY. Remove that env var once
+// ARCGIS_CLIENT_ID / ARCGIS_CLIENT_SECRET are set.
+let warnedFallback = false;
+app.get('/api/token', async (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    if (hasAppCredentials()) {
+      const { token, expiresAt } = await getAppToken();
+      return res.json({ token, expiresAt, source: 'oauth-app' });
+    }
+    const fallback = process.env.ARCGIS_BASEMAP_API_KEY;
+    if (fallback) {
+      if (!warnedFallback) {
+        console.warn('Serving ARCGIS_BASEMAP_API_KEY to browser. Set ARCGIS_CLIENT_ID/SECRET to use short-lived tokens.');
+        warnedFallback = true;
+      }
+      return res.json({ token: fallback, expiresAt: null, source: 'api-key' });
+    }
+    res.status(503).json({ error: 'No map credentials configured on the server.' });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // GET /api/places?pincode=110001

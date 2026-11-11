@@ -1,5 +1,6 @@
 import Graphic from '@arcgis/core/Graphic';
-import { getConfig, getRoute, searchPincode } from './api';
+import { getMapToken, getRoute, searchPincode } from './api';
+import type { MapToken } from './api';
 import { createMap } from './map';
 import type { Place } from './types';
 import './styles.css';
@@ -45,15 +46,35 @@ function addPlaces(incoming: Place[]): number {
   return added;
 }
 
+// Refresh this long before the token expires.
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+
 async function start(): Promise<void> {
-  let basemapApiKey = '';
+  let mapToken: MapToken | null = null;
   try {
-    basemapApiKey = (await getConfig()).basemapApiKey;
-  } catch {
-    setMessage('Could not load config from server.', true);
+    mapToken = await getMapToken();
+  } catch (err) {
+    setMessage(err instanceof Error ? `Map token: ${err.message}` : 'Could not get map token.', true);
   }
 
-  const map = createMap('map', basemapApiKey);
+  const map = createMap('map', mapToken?.token ?? '');
+
+  // Short-lived tokens: fetch a new one before the current one expires.
+  function scheduleRefresh(expiresAt: number | null): void {
+    if (expiresAt === null) return; // long-lived fallback key, nothing to refresh
+    const delay = Math.max(60_000, expiresAt - Date.now() - TOKEN_REFRESH_MARGIN_MS);
+    window.setTimeout(async () => {
+      try {
+        const next = await getMapToken();
+        map.setToken(next.token);
+        scheduleRefresh(next.expiresAt);
+      } catch {
+        // Retry in a minute if the server is waking up or briefly unreachable.
+        scheduleRefresh(Date.now() + TOKEN_REFRESH_MARGIN_MS + 60_000);
+      }
+    }, delay);
+  }
+  if (mapToken) scheduleRefresh(mapToken.expiresAt);
 
   /** Redraw pins and list from the current places array. */
   function refresh(): void {

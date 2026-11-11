@@ -1,8 +1,11 @@
 // Thin wrapper over the Express API. All ArcGIS calls go through the server.
 import type { Place, RouteResult } from './types';
 
-export interface Config {
-  basemapApiKey: string;
+export interface MapToken {
+  token: string;
+  /** Epoch ms when the token expires. null = long-lived fallback key. */
+  expiresAt: number | null;
+  source: 'oauth-app' | 'api-key';
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -14,8 +17,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export function getConfig(): Promise<Config> {
-  return request<Config>('/api/config');
+export function getMapToken(): Promise<MapToken> {
+  return request<MapToken>('/api/token', { cache: 'no-store' });
 }
 
 export async function searchPincode(pincode: string): Promise<Place[]> {

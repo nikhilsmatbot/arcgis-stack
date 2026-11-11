@@ -20,6 +20,8 @@ const PIN_COLOR: [number, number, number] = [200, 30, 30];
 const ROUTE_COLOR: [number, number, number] = [40, 90, 180];
 
 export interface MapHandle {
+  /** Swap in a fresh access token (called before the old one expires). */
+  setToken(token: string): void;
   showPlaces(places: Place[]): Graphic[];
   focus(graphic: Graphic): Promise<void>;
   showRoute(paths: number[][][]): void;
@@ -27,9 +29,11 @@ export interface MapHandle {
   clear(): void;
 }
 
-export function createMap(containerId: string, basemapApiKey: string): MapHandle {
-  if (basemapApiKey) {
-    esriConfig.apiKey = basemapApiKey;
+export function createMap(containerId: string, token: string): MapHandle {
+  // Short-lived access token from /api/token. The SDK appends it to
+  // basemap requests. No long-lived key is stored in the client bundle.
+  if (token) {
+    esriConfig.apiKey = token;
   }
 
   const placesLayer = new GraphicsLayer({ title: 'Places' });
@@ -48,6 +52,10 @@ export function createMap(containerId: string, basemapApiKey: string): MapHandle
   });
 
   return {
+    setToken(next) {
+      esriConfig.apiKey = next;
+    },
+
     showPlaces(places) {
       placesLayer.removeAll();
       const graphics = places.map(
