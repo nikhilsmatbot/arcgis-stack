@@ -46,9 +46,6 @@ function addPlaces(incoming: Place[]): number {
   return added;
 }
 
-// Refresh this long before the token expires.
-const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
-
 async function start(): Promise<void> {
   let mapToken: MapToken | null = null;
   try {
@@ -59,22 +56,23 @@ async function start(): Promise<void> {
 
   const map = createMap('map', mapToken?.token ?? '');
 
-  // Short-lived tokens: fetch a new one before the current one expires.
-  function scheduleRefresh(expiresAt: number | null): void {
-    if (expiresAt === null) return; // long-lived fallback key, nothing to refresh
-    const delay = Math.max(60_000, expiresAt - Date.now() - TOKEN_REFRESH_MARGIN_MS);
+  // Short-lived tokens: the server says when to ask again (refreshInMs).
+  // It rotates its cached token at that point, so we get a fresh one while
+  // the old one is still valid. +1 s so we land just after the server's cutover.
+  function scheduleRefresh(refreshInMs: number): void {
+    const delay = Math.max(5_000, refreshInMs + 1_000);
     window.setTimeout(async () => {
       try {
         const next = await getMapToken();
         map.setToken(next.token);
-        scheduleRefresh(next.expiresAt);
+        scheduleRefresh(next.refreshInMs);
       } catch {
-        // Retry in a minute if the server is waking up or briefly unreachable.
-        scheduleRefresh(Date.now() + TOKEN_REFRESH_MARGIN_MS + 60_000);
+        // Server waking up or briefly unreachable: retry soon.
+        scheduleRefresh(10_000);
       }
     }, delay);
   }
-  if (mapToken) scheduleRefresh(mapToken.expiresAt);
+  if (mapToken) scheduleRefresh(mapToken.refreshInMs);
 
   /** Redraw pins and list from the current places array. */
   function refresh(): void {

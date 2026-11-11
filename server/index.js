@@ -22,8 +22,8 @@ app.get('/api/token', async (_req, res, next) => {
         .status(503)
         .json({ error: 'Map credentials not configured (ARCGIS_CLIENT_ID / ARCGIS_CLIENT_SECRET).' });
     }
-    const { token, expiresAt } = await getAppToken();
-    res.json({ token, expiresAt, source: 'oauth-app' });
+    const { token, expiresAt, refreshInMs } = await getAppToken();
+    res.json({ token, expiresAt, refreshInMs, source: 'oauth-app' });
   } catch (err) {
     next(err);
   }

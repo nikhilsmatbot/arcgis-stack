@@ -3,8 +3,10 @@ import type { Place, RouteResult } from './types';
 
 export interface MapToken {
   token: string;
-  /** Epoch ms when the token expires. */
-  expiresAt: number | null;
+  /** Epoch ms when the token expires (server clock, informational). */
+  expiresAt: number;
+  /** Ask for a new token after this many ms. Relative, so clock skew is irrelevant. */
+  refreshInMs: number;
   source: 'oauth-app';
 }
 

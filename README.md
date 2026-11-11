@@ -19,7 +19,7 @@ Small full-stack demo of ArcGIS services:
 
 ```
 browser ──► Vite (dev) / Express (prod)
-             ├─ /api/token   ─► short-lived map token (OAuth app auth, ~2 h)
+             ├─ /api/token   ─► short-lived map token (OAuth app auth, 5 min)
              ├─ /api/places  ─► ArcGIS World Geocoder  (server key)
              └─ /api/route   ─► ArcGIS Route_World     (server key)
 ```
@@ -29,7 +29,8 @@ browser ──► Vite (dev) / Express (prod)
 No long-lived credential reaches the browser.
 
 - **Geocoding and routing:** `ARCGIS_API_KEY` is only used inside Express. The browser calls `/api/places` and `/api/route`; it never sees the key.
-- **Basemap:** the map SDK must send a credential with each tile request, so the browser needs *something*. The server holds `ARCGIS_CLIENT_ID` and `ARCGIS_CLIENT_SECRET`, exchanges them for an access token (`grant_type=client_credentials`, 2-hour expiry), caches it, and gives the browser only that token via `/api/token`. The client refreshes it before it expires. A leaked token stops working within 2 hours; the client secret never leaves the server.
+- **Basemap:** the map SDK must send a credential with each tile request, so the browser needs *something*. The server holds `ARCGIS_CLIENT_ID` and `ARCGIS_CLIENT_SECRET`, exchanges them for an access token (`grant_type=client_credentials`, 5-minute expiry, set with `ARCGIS_TOKEN_MINUTES`), caches it, and gives the browser only that token via `/api/token`. The server rotates the token when 20% of its life is left and tells the client when to ask again (`refreshInMs`), so the map switches while the old token still works. A copied token stops working within 5 minutes; the client secret never leaves the server.
+- **Limits:** anyone can call `/api/token` from a browser on the site, so a short lifetime does not stop someone determined; it only makes a copied token useless quickly. The real protection is the referrer lock (token only works from this site's origin) and the narrow privileges.
 - **Scope:** give the OAuth credentials the Basemaps privilege only, so the browser token cannot geocode or route.
 
 This is Esri's recommended pattern for public apps without user sign-in ("app authentication").

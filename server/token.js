@@ -11,15 +11,25 @@
 import { UpstreamError } from './arcgis.js';
 
 const DEFAULT_PORTAL = 'https://www.arcgis.com/sharing/rest';
-const TOKEN_MINUTES = 120;
-// Refresh this long before expiry so a client never receives an almost-dead token.
-const REFRESH_MARGIN_MS = 10 * 60 * 1000;
 
-let cached = null; // { token, expiresAt }
+// Token lifetime in minutes. Short = a copied token is useless sooner.
+// Override with ARCGIS_TOKEN_MINUTES (1-120). Default 5.
+const TOKEN_MINUTES = Math.min(120, Math.max(1, Number(process.env.ARCGIS_TOKEN_MINUTES) || 5));
+
+let cached = null; // { token, expiresAt, lifetimeMs }
 let inflight = null;
 
 export function hasAppCredentials() {
   return Boolean(process.env.ARCGIS_CLIENT_ID && process.env.ARCGIS_CLIENT_SECRET);
+}
+
+/**
+ * How long before expiry a token counts as stale: 20% of its lifetime,
+ * at least 30 s. A 5-minute token is replaced when 1 minute is left, so the
+ * browser always switches while the old one still works.
+ */
+function staleMarginMs(lifetimeMs) {
+  return Math.max(30_000, lifetimeMs * 0.2);
 }
 
 async function requestToken() {
@@ -49,24 +59,31 @@ async function requestToken() {
     throw new UpstreamError(`ArcGIS token error: ${msg}`, 502);
   }
 
-  const expiresInMs = (Number(data.expires_in) || TOKEN_MINUTES * 60) * 1000;
-  return { token: data.access_token, expiresAt: Date.now() + expiresInMs };
+  // Trust what ArcGIS actually granted, not what we asked for.
+  const lifetimeMs = (Number(data.expires_in) || TOKEN_MINUTES * 60) * 1000;
+  return { token: data.access_token, expiresAt: Date.now() + lifetimeMs, lifetimeMs };
 }
 
-/** Return a cached token, fetching a new one when close to expiry. */
+/**
+ * Return { token, expiresAt, refreshInMs }. Reuses the cached token until it
+ * is stale. refreshInMs tells the client when to ask again; it is relative,
+ * so client/server clock differences do not matter.
+ */
 export async function getAppToken() {
-  if (cached && cached.expiresAt - Date.now() > REFRESH_MARGIN_MS) {
-    return cached;
+  if (!cached || cached.expiresAt - Date.now() <= staleMarginMs(cached.lifetimeMs)) {
+    if (!inflight) {
+      inflight = requestToken()
+        .then((t) => {
+          cached = t;
+          return t;
+        })
+        .finally(() => {
+          inflight = null;
+        });
+    }
+    await inflight;
   }
-  if (!inflight) {
-    inflight = requestToken()
-      .then((t) => {
-        cached = t;
-        return t;
-      })
-      .finally(() => {
-        inflight = null;
-      });
-  }
-  return inflight;
+  const { token, expiresAt, lifetimeMs } = cached;
+  const refreshInMs = Math.max(0, expiresAt - staleMarginMs(lifetimeMs) - Date.now());
+  return { token, expiresAt, refreshInMs };
 }
