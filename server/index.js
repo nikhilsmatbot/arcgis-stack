@@ -12,27 +12,18 @@ const PORT = Number(process.env.PORT) || 3001;
 const app = express();
 app.use(express.json({ limit: '10kb' }));
 
-// Map token for the browser. Preferred: a short-lived OAuth app token, so no
-// long-lived credential reaches the client. Fallback (transition only): the
-// referrer-restricted ARCGIS_BASEMAP_API_KEY. Remove that env var once
-// ARCGIS_CLIENT_ID / ARCGIS_CLIENT_SECRET are set.
-let warnedFallback = false;
+// Map token for the browser: a short-lived OAuth app token only. The server
+// never sends a raw env value to the client, so a misplaced secret cannot leak.
 app.get('/api/token', async (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
   try {
-    if (hasAppCredentials()) {
-      const { token, expiresAt } = await getAppToken();
-      return res.json({ token, expiresAt, source: 'oauth-app' });
+    if (!hasAppCredentials()) {
+      return res
+        .status(503)
+        .json({ error: 'Map credentials not configured (ARCGIS_CLIENT_ID / ARCGIS_CLIENT_SECRET).' });
     }
-    const fallback = process.env.ARCGIS_BASEMAP_API_KEY;
-    if (fallback) {
-      if (!warnedFallback) {
-        console.warn('Serving ARCGIS_BASEMAP_API_KEY to browser. Set ARCGIS_CLIENT_ID/SECRET to use short-lived tokens.');
-        warnedFallback = true;
-      }
-      return res.json({ token: fallback, expiresAt: null, source: 'api-key' });
-    }
-    res.status(503).json({ error: 'No map credentials configured on the server.' });
+    const { token, expiresAt } = await getAppToken();
+    res.json({ token, expiresAt, source: 'oauth-app' });
   } catch (err) {
     next(err);
   }

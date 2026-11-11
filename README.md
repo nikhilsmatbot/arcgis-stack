@@ -101,7 +101,7 @@ GitHub Pages cannot run the Express server, so deploy the whole app as one Node 
    - Build command: `npm install && npm run build`
    - Start command: `npm start`
 4. Add environment variables `ARCGIS_API_KEY`, `ARCGIS_CLIENT_ID`, `ARCGIS_CLIENT_SECRET`. Render sets `PORT` automatically.
-5. Remove `ARCGIS_BASEMAP_API_KEY` if it is still set, so no long-lived key is served to the browser.
+5. Delete `ARCGIS_BASEMAP_API_KEY` if it is still set. The app no longer reads it.
 
 Free instances sleep after inactivity, so the first request can be slow.
 

@@ -3,9 +3,9 @@ import type { Place, RouteResult } from './types';
 
 export interface MapToken {
   token: string;
-  /** Epoch ms when the token expires. null = long-lived fallback key. */
+  /** Epoch ms when the token expires. */
   expiresAt: number | null;
-  source: 'oauth-app' | 'api-key';
+  source: 'oauth-app';
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
