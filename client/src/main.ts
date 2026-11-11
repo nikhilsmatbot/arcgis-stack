@@ -11,11 +11,13 @@ const input = document.querySelector<HTMLInputElement>('#pincode')!;
 const message = document.querySelector<HTMLParagraphElement>('#search-message')!;
 const resultsList = document.querySelector<HTMLUListElement>('#results')!;
 const resultsCount = document.querySelector<HTMLSpanElement>('#results-count')!;
+const clearBtn = document.querySelector<HTMLButtonElement>('#clear-btn')!;
 const fromSelect = document.querySelector<HTMLSelectElement>('#from-select')!;
 const toSelect = document.querySelector<HTMLSelectElement>('#to-select')!;
 const routeBtn = document.querySelector<HTMLButtonElement>('#route-btn')!;
 const routeInfo = document.querySelector<HTMLParagraphElement>('#route-info')!;
 
+// All places collected across searches. Routing picks From/To from this list.
 let places: Place[] = [];
 let graphics: Graphic[] = [];
 
@@ -28,6 +30,21 @@ function setRouteInfo(text: string): void {
   routeInfo.textContent = text;
 }
 
+/** Add places not already in the list. Returns how many were new. */
+function addPlaces(incoming: Place[]): number {
+  let added = 0;
+  for (const place of incoming) {
+    const exists = places.some(
+      (p) => p.pincode === place.pincode && p.lat === place.lat && p.lon === place.lon
+    );
+    if (!exists) {
+      places.push(place);
+      added++;
+    }
+  }
+  return added;
+}
+
 async function start(): Promise<void> {
   let basemapApiKey = '';
   try {
@@ -37,6 +54,14 @@ async function start(): Promise<void> {
   }
 
   const map = createMap('map', basemapApiKey);
+
+  /** Redraw pins and list from the current places array. */
+  function refresh(): void {
+    graphics = places.length ? map.showPlaces(places) : [];
+    if (!places.length) map.clear();
+    map.clearRoute();
+    renderResults();
+  }
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -50,23 +75,33 @@ async function start(): Promise<void> {
     }
 
     setMessage('Searching…', false);
+    let found: Place[];
     try {
-      places = await searchPincode(query);
+      found = await searchPincode(query);
     } catch (err) {
-      places = [];
       setMessage(err instanceof Error ? err.message : 'Search failed.', true);
-      renderResults(map);
       return;
     }
 
-    map.clear();
-    if (places.length === 0) {
+    if (found.length === 0) {
       setMessage(`No places found for pincode ${query}.`, false);
-    } else {
-      setMessage('', false);
-      graphics = map.showPlaces(places);
+      return;
     }
-    renderResults(map);
+
+    const added = addPlaces(found);
+    setMessage(
+      added ? `Added ${added} place(s) for ${query}.` : `Pincode ${query} is already in the list.`,
+      false
+    );
+    input.value = '';
+    refresh();
+  });
+
+  clearBtn.addEventListener('click', () => {
+    places = [];
+    graphics = [];
+    setMessage('', false);
+    refresh();
   });
 
   routeBtn.addEventListener('click', async () => {
@@ -83,7 +118,7 @@ async function start(): Promise<void> {
     try {
       const route = await getRoute(from, to);
       map.showRoute(route.paths);
-      const parts = [];
+      const parts: string[] = [];
       if (route.kilometers !== null) parts.push(`${route.kilometers.toFixed(1)} km`);
       if (route.minutes !== null) parts.push(`${Math.round(route.minutes)} min`);
       setRouteInfo(`${from.name} → ${to.name}${parts.length ? `: ${parts.join(', ')}` : ''}`);
@@ -94,9 +129,9 @@ async function start(): Promise<void> {
     }
   });
 
-  function renderResults(handle: ReturnType<typeof createMap>): void {
+  function renderResults(): void {
     resultsList.replaceChildren();
-    resultsCount.textContent = places.length ? `${places.length} found` : '';
+    resultsCount.textContent = places.length ? `${places.length} place(s)` : '';
     fromSelect.replaceChildren();
     toSelect.replaceChildren();
 
@@ -113,17 +148,18 @@ async function start(): Promise<void> {
       button.append(title, meta);
 
       button.addEventListener('click', () => {
-        const graphic = graphics[i];
-        if (graphic) void handle.focus(graphic);
+        const graphic: Graphic | undefined = graphics[i];
+        if (graphic) void map.focus(graphic);
       });
       li.appendChild(button);
       resultsList.appendChild(li);
 
-      fromSelect.add(new Option(place.name, String(i)));
-      toSelect.add(new Option(place.name, String(i)));
+      fromSelect.add(new Option(`${place.name} (${place.pincode})`, String(i)));
+      toSelect.add(new Option(`${place.name} (${place.pincode})`, String(i)));
     });
 
     const hasTwo = places.length >= 2;
+    clearBtn.disabled = places.length === 0;
     fromSelect.disabled = !hasTwo;
     toSelect.disabled = !hasTwo;
     routeBtn.disabled = !hasTwo;
@@ -131,10 +167,11 @@ async function start(): Promise<void> {
       toSelect.selectedIndex = 1;
       setRouteInfo('');
     } else {
-      setRouteInfo(places.length ? 'Need two results to route.' : '');
-      handle.clearRoute();
+      setRouteInfo(places.length ? 'Add one more pincode to route.' : '');
     }
   }
+
+  renderResults();
 }
 
 void start();
