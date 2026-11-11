@@ -139,5 +139,14 @@ button.secondary {
     border-bottom: 1px solid var(--border);
     overflow: visible;
   }
-  .map-wrap { flex: none; height: 55vh; min-height: 320px; }
+  /* Phone: map first and sticky at top, form scrolls underneath. */
+  .map-wrap {
+    order: -1;
+    flex: none;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    height: 50vh;
+    min-height: 280px;
+  }
 }
