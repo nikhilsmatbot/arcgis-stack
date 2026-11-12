@@ -1,6 +1,7 @@
 import Graphic from '@arcgis/core/Graphic';
 import { getMapToken, getNearby, getRoute, searchPostal } from './api';
 import type { MapToken } from './api';
+import { rankByLikelyCountry, rememberCountry } from './country';
 import { createMap } from './map';
 import type { Area, CategoryKey, LatLon, NearbyPlace } from './types';
 import './styles.css';
@@ -47,6 +48,7 @@ let selected = -1; // index into areas
 // matches from the latest search; picking one swaps it in for areas[altFor].
 let alternates: Area[] = [];
 let altFor = -1;
+let alternatesOpen = false; // expand the list when we could not guess the country
 let category: CategoryKey = 'all';
 let nearby: NearbyPlace[] = []; // places for the selected area + category
 let areaPins: Graphic[] = [];
@@ -128,8 +130,10 @@ async function start(): Promise<void> {
       return;
     }
 
-    // Show the best match; keep the rest as alternates the user can switch to.
-    const [best, ...rest] = found;
+    // Show the most likely match; keep the rest as alternates the user can switch to.
+    const { ranked, confident } = rankByLikelyCountry(found, areas);
+    const [best, ...rest] = ranked;
+    alternatesOpen = !confident;
     let index = areas.findIndex((a) => sameArea(a, best));
     if (index === -1) {
       areas.push(best);
@@ -138,10 +142,11 @@ async function start(): Promise<void> {
     alternates = rest;
     altFor = index;
 
+    const where = [best.name, best.country].filter(Boolean).join(', ');
     setMessage(
       rest.length
-        ? `Showing ${best.name}. This code exists in ${rest.length} other place${rest.length > 1 ? 's' : ''} too.`
-        : `Showing ${best.name}.`
+        ? `Showing ${where}. This code exists in ${rest.length} other place${rest.length > 1 ? 's' : ''} too. Pick below if this is the wrong one.`
+        : `Showing ${where}.`
     );
     input.value = '';
     selectArea(index);
@@ -151,6 +156,7 @@ async function start(): Promise<void> {
     areas = [];
     alternates = [];
     altFor = -1;
+    alternatesOpen = false;
     selected = -1;
     nearby = [];
     areaPins = [];
@@ -192,6 +198,7 @@ async function start(): Promise<void> {
       // Same code in other countries: collapsed, so it does not bury the nearby list.
       if (i === selected && i === altFor && alternates.length) {
         const details = el('details', 'alternates');
+        details.open = alternatesOpen;
         details.appendChild(
           el('summary', undefined, `Not the right ${area.postal}? ${alternates.length} other match${alternates.length > 1 ? 'es' : ''}`)
         );
@@ -203,7 +210,9 @@ async function start(): Promise<void> {
             // Swap: the alternate becomes the area, the old area becomes an alternate.
             alternates[altIndex] = areas[i];
             areas[i] = alt;
-            setMessage(`Showing ${alt.name}.`);
+            rememberCountry(alt.countryCode); // prefer this country next time
+            alternatesOpen = false;
+            setMessage(`Showing ${[alt.name, alt.country].filter(Boolean).join(', ')}.`);
             selectArea(i);
           });
           details.appendChild(pick);

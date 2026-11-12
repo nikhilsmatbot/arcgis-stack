@@ -3,6 +3,8 @@ export interface Area {
   name: string;
   postal: string;
   country: string;
+  /** ISO 3166-1 alpha-3 (IND, USA, ...). Used to rank same-code matches. */
+  countryCode: string;
   lat: number;
   lon: number;
   /** Size of the area; also the radius of the nearby search. */

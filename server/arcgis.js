@@ -71,7 +71,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
  * countries (20170 is in the USA, France, Spain, ...), so this returns every
  * match and the user picks one.
  *
- * Each area: { name, postal, country, lat, lon, radiusKm }.
+ * Each area: { name, postal, country, countryCode, lat, lon, radiusKm }.
  * radiusKm comes from the area's extent and sizes the nearby search.
  */
 export async function geocodePostal(code) {
@@ -79,7 +79,7 @@ export async function geocodePostal(code) {
     SingleLine: code,
     category: 'Postal',
     maxLocations: '8',
-    outFields: 'Postal,CntryName,City,Region',
+    outFields: 'Postal,CntryName,Country,City,Region',
     f: 'json',
     token: serviceKey()
   });
@@ -105,6 +105,7 @@ export async function geocodePostal(code) {
       name: c.address,
       postal: c.attributes?.Postal || code,
       country: c.attributes?.CntryName || '',
+      countryCode: c.attributes?.Country || '', // ISO 3166-1 alpha-3, e.g. IND, USA
       lat,
       lon,
       radiusKm: Math.round(radiusKm * 10) / 10
