@@ -1,10 +1,11 @@
-# ArcGIS Pincode & Route Demo
+# ArcGIS Postal Code Explorer
 
 Small full-stack demo of ArcGIS services:
 
 - **Map:** ArcGIS Maps SDK for JavaScript 4.29, `streets-navigation-vector` basemap.
-- **Geocoding:** Esri World Geocoder, looks up places by Indian pincode.
-- **Routing:** ArcGIS Route service (`Route_World`), draws a driving route between two results.
+- **Postal search:** Esri World Geocoder, looks up a postal code in any country (`20170`, `110001`, `SW1A 1AA`).
+- **Nearby places:** the same geocoder's POI categories list restaurants, hotels, grocery, pharmacies, ATMs, fuel, hospitals and things to do around the area.
+- **Routing:** ArcGIS Route service (`Route_World`), draws a driving route from the area to a place, or between any two points.
 
 > ArcGIS is a prototype choice. The production map will move to MapLibre GL.
 
@@ -20,7 +21,8 @@ Small full-stack demo of ArcGIS services:
 ```
 browser ──► Vite (dev) / Express (prod)
              ├─ /api/token   ─► short-lived map token (OAuth app auth, 5 min)
-             ├─ /api/places  ─► ArcGIS World Geocoder  (server key)
+             ├─ /api/areas   ─► ArcGIS World Geocoder, postal lookup  (server key)
+             ├─ /api/nearby  ─► ArcGIS World Geocoder, POI categories (server key)
              └─ /api/route   ─► ArcGIS Route_World     (server key)
 ```
 
@@ -39,10 +41,10 @@ This is Esri's recommended pattern for public apps without user sign-in ("app au
 
 ```
 server/index.js     Express app, routes, error handling
-server/arcgis.js    ArcGIS REST calls (geocode, route)
+server/arcgis.js    ArcGIS REST calls (postal lookup, nearby places, route)
 server/token.js     OAuth app token: fetch, cache, refresh
 client/index.html   Page shell
-client/src/main.ts  UI wiring: search, results, route form
+client/src/main.ts  UI wiring: search, areas, category chips, nearby list, route
 client/src/map.ts   ArcGIS map layer code (prototype, swap to MapLibre later)
 client/src/api.ts   Fetch wrapper for /api
 client/src/types.ts Shared types
@@ -86,11 +88,12 @@ npm start                # http://localhost:3001 serves UI and API
 
 ## 3. Try it
 
-1. Enter a 6-digit pincode, for example `110001`, and press Enter.
-2. Click a result to center the map and open its popup.
-3. Choose **From** and **To** (needs at least two results) and click **Get route**.
+1. Enter a postal code from any country, for example `20170`, `110001` or `SW1A 1AA`, and press Enter.
+2. The map shows the area (red pin, dashed circle) and the nearest places (blue pins). If the same code exists in other countries, open **Not the right code?** under the area and pick another.
+3. Use the chips (Restaurants, Hotels, Grocery, ...) to filter nearby places. Click a place to open it on the map.
+4. Click **Route** on a place for a driving route from the area center, or use the **From / To** form for any two points. Search a second postal code to route between areas.
 
-Validation: non-6-digit input shows a message and never calls the API. The server re-checks the pincode.
+Validation: input must be 3 to 12 letters or digits (spaces and hyphens allowed inside). Anything else shows a message and never calls the API. The server re-checks the code and only accepts known category keys.
 
 ## 4. Deploy (free tier)
 
@@ -108,7 +111,7 @@ Free instances sleep after inactivity, so the first request can be slow.
 
 ## Notes and limits
 
-- **Pincode results:** the geocoder returns address matches that carry the pincode. It does not list every point of interest in a pincode. A full list needs a places service or your own dataset.
-- **Credits:** geocoding and routing consume credits. Each search and route is a billable call.
+- **Nearby results:** the geocoder returns at most 50 places per request, nearest to the area center first, inside a circle sized from the postal area (1 to 10 km). In a dense area that can be the closest few hundred metres only. It is not an official postal boundary. ArcGIS Places service gives richer data (ratings, hours) if needed later.
+- **Credits:** each postal search, each category filter and each route is one billable call. The client caches nearby results per area and category.
 - **Keys:** never commit `.env`. Rotate a key if it leaks.
-- **Coverage:** Indian pincode matching depends on the geocoder's data. Test a few known pincodes before you present.
+- **Coverage:** postal and POI data quality varies by country. Test the codes you plan to show before you present.

@@ -3,42 +3,66 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ArcGIS Pincode & Route Demo</title>
+    <title>ArcGIS Postal Code Explorer</title>
   </head>
   <body>
     <header class="app-header">
-      <h1>Pincode &amp; Route Demo</h1>
-      <p>ArcGIS geocoding and routing behind a small Express API.</p>
+      <h1>Postal Code Explorer</h1>
+      <p>Search any postal code, see what is nearby, get a route. Powered by ArcGIS.</p>
     </header>
 
     <main class="layout">
       <aside class="sidebar">
-        <form id="search-form" class="block" novalidate>
-          <label for="pincode">Pincode</label>
-          <input id="pincode" type="text" inputmode="numeric" autocomplete="postal-code" placeholder="e.g. 110001" />
-          <p id="search-message" class="message" role="status" aria-live="polite"></p>
+        <form id="search-form" class="search" novalidate>
+          <label for="postal">Postal code</label>
+          <div class="search-row">
+            <input
+              id="postal"
+              type="text"
+              autocomplete="postal-code"
+              placeholder="e.g. 20170, 110001, SW1A 1AA"
+              aria-describedby="search-message"
+            />
+            <button type="submit" class="primary">Search</button>
+          </div>
+          <p id="search-message" class="message info" role="status" aria-live="polite"></p>
         </form>
 
-        <div class="results-header">
-          <h2>Results</h2>
-          <span id="results-count" class="count"></span>
-        </div>
-        <button id="clear-btn" type="button" class="secondary" disabled>Clear all</button>
-        <ul id="results" class="results"></ul>
+        <!-- Searched postal areas. One code can match several countries. -->
+        <section id="areas-section" class="section" hidden>
+          <div class="section-head">
+            <h2>Areas</h2>
+            <button id="clear-btn" type="button" class="ghost">Clear all</button>
+          </div>
+          <ul id="areas" class="list"></ul>
+        </section>
 
-        <section class="block route-block">
-          <h2>Route</h2>
+        <!-- Places near the selected area. -->
+        <section id="nearby-section" class="section" hidden>
+          <div class="section-head">
+            <h2 id="nearby-title">Nearby</h2>
+            <span id="nearby-count" class="count"></span>
+          </div>
+          <div id="chips" class="chips" role="group" aria-label="Place type"></div>
+          <p id="nearby-message" class="message info" role="status" aria-live="polite"></p>
+          <ul id="nearby" class="list"></ul>
+        </section>
+
+        <section id="route-section" class="section" hidden>
+          <div class="section-head">
+            <h2>Route</h2>
+          </div>
           <label for="from-select">From</label>
-          <select id="from-select" disabled></select>
+          <select id="from-select"></select>
           <label for="to-select">To</label>
-          <select id="to-select" disabled></select>
-          <button id="route-btn" type="button" disabled>Get route</button>
+          <select id="to-select"></select>
+          <button id="route-btn" type="button" class="primary block">Get route</button>
           <p id="route-info" class="message info" role="status" aria-live="polite"></p>
         </section>
       </aside>
 
       <section class="map-wrap">
-        <div id="map" aria-label="Map of matching places and route"></div>
+        <div id="map" aria-label="Map of postal areas, nearby places and route"></div>
       </section>
     </main>
 

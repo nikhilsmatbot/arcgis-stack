@@ -2,7 +2,13 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { geocodePincode, solveRoute, UpstreamError } from './arcgis.js';
+import {
+  geocodePostal,
+  nearbyPlaces,
+  solveRoute,
+  NEARBY_CATEGORIES,
+  UpstreamError
+} from './arcgis.js';
 import { getAppToken, hasAppCredentials } from './token.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,15 +35,38 @@ app.get('/api/token', async (_req, res, next) => {
   }
 });
 
-// GET /api/places?pincode=110001
-app.get('/api/places', async (req, res, next) => {
+// Postal codes from any country: 3-12 letters/digits, spaces or hyphens inside
+// (110001, 20170, SW1A 1AA, K1A 0B1, 1010-001).
+const POSTAL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 -]{1,10}[A-Za-z0-9]$/;
+
+// GET /api/areas?code=20170  -> postal areas matching the code, any country
+app.get('/api/areas', async (req, res, next) => {
   try {
-    const pincode = String(req.query.pincode ?? '').trim();
-    if (!/^\d{6}$/.test(pincode)) {
-      return res.status(400).json({ error: 'Pincode must be 6 digits.' });
+    const code = String(req.query.code ?? '').trim();
+    if (!POSTAL_PATTERN.test(code)) {
+      return res.status(400).json({ error: 'Enter a postal code (3-12 letters or digits).' });
     }
-    const places = await geocodePincode(pincode);
-    res.json({ pincode, places });
+    const areas = await geocodePostal(code);
+    res.json({ code, areas });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/nearby?lat=..&lon=..&radiusKm=..&category=restaurants
+app.get('/api/nearby', async (req, res, next) => {
+  try {
+    const point = { lat: Number(req.query.lat), lon: Number(req.query.lon) };
+    const radiusKm = Number(req.query.radiusKm) || 2;
+    const category = String(req.query.category ?? 'all');
+    if (!isPoint(point)) {
+      return res.status(400).json({ error: 'lat and lon must be numbers.' });
+    }
+    if (!Object.hasOwn(NEARBY_CATEGORIES, category)) {
+      return res.status(400).json({ error: 'Unknown category.' });
+    }
+    const places = await nearbyPlaces({ ...point, radiusKm, category });
+    res.json({ category, places });
   } catch (err) {
     next(err);
   }

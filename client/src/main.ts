@@ -1,49 +1,78 @@
 import Graphic from '@arcgis/core/Graphic';
-import { getMapToken, getRoute, searchPincode } from './api';
+import { getMapToken, getNearby, getRoute, searchPostal } from './api';
 import type { MapToken } from './api';
 import { createMap } from './map';
-import type { Place } from './types';
+import type { Area, CategoryKey, LatLon, NearbyPlace } from './types';
 import './styles.css';
 
-const PINCODE_PATTERN = /^\d{6}$/;
+// Postal codes from any country: 3-12 letters/digits, spaces or hyphens inside.
+const POSTAL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 -]{1,10}[A-Za-z0-9]$/;
 
-const form = document.querySelector<HTMLFormElement>('#search-form')!;
-const input = document.querySelector<HTMLInputElement>('#pincode')!;
-const message = document.querySelector<HTMLParagraphElement>('#search-message')!;
-const resultsList = document.querySelector<HTMLUListElement>('#results')!;
-const resultsCount = document.querySelector<HTMLSpanElement>('#results-count')!;
-const clearBtn = document.querySelector<HTMLButtonElement>('#clear-btn')!;
-const fromSelect = document.querySelector<HTMLSelectElement>('#from-select')!;
-const toSelect = document.querySelector<HTMLSelectElement>('#to-select')!;
-const routeBtn = document.querySelector<HTMLButtonElement>('#route-btn')!;
-const routeInfo = document.querySelector<HTMLParagraphElement>('#route-info')!;
+const CATEGORIES: { key: CategoryKey; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'restaurants', label: 'Restaurants' },
+  { key: 'hotels', label: 'Hotels' },
+  { key: 'grocery', label: 'Grocery' },
+  { key: 'pharmacies', label: 'Pharmacies' },
+  { key: 'atms', label: 'ATMs' },
+  { key: 'fuel', label: 'Fuel' },
+  { key: 'hospitals', label: 'Hospitals' },
+  { key: 'things', label: 'Things to do' }
+];
 
-// All places collected across searches. Routing picks From/To from this list.
-let places: Place[] = [];
-let graphics: Graphic[] = [];
+const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-function setMessage(text: string, isError: boolean): void {
+const form = $<HTMLFormElement>('search-form');
+const input = $<HTMLInputElement>('postal');
+const message = $<HTMLParagraphElement>('search-message');
+const areasSection = $<HTMLElement>('areas-section');
+const areasList = $<HTMLUListElement>('areas');
+const clearBtn = $<HTMLButtonElement>('clear-btn');
+const nearbySection = $<HTMLElement>('nearby-section');
+const nearbyTitle = $<HTMLHeadingElement>('nearby-title');
+const nearbyCount = $<HTMLSpanElement>('nearby-count');
+const chips = $<HTMLDivElement>('chips');
+const nearbyMessage = $<HTMLParagraphElement>('nearby-message');
+const nearbyList = $<HTMLUListElement>('nearby');
+const routeSection = $<HTMLElement>('route-section');
+const fromSelect = $<HTMLSelectElement>('from-select');
+const toSelect = $<HTMLSelectElement>('to-select');
+const routeBtn = $<HTMLButtonElement>('route-btn');
+const routeInfo = $<HTMLParagraphElement>('route-info');
+
+// ---- State ----
+let areas: Area[] = []; // one chosen area per search
+let selected = -1; // index into areas
+// The same code often exists in several countries. These are the other
+// matches from the latest search; picking one swaps it in for areas[altFor].
+let alternates: Area[] = [];
+let altFor = -1;
+let category: CategoryKey = 'all';
+let nearby: NearbyPlace[] = []; // places for the selected area + category
+let areaPins: Graphic[] = [];
+let nearbyPins: Graphic[] = [];
+// Avoid repeat geocode calls (each one costs credits).
+const nearbyCache = new Map<string, NearbyPlace[]>();
+let nearbyRequest = 0; // guards against out-of-order responses
+
+/** Points the route form can use: all areas, then the nearby places shown. */
+interface RoutePoint extends LatLon {
+  label: string;
+}
+let routePoints: RoutePoint[] = [];
+
+function setMessage(text: string, isError = false): void {
   message.textContent = text;
   message.classList.toggle('info', !isError);
 }
 
-function setRouteInfo(text: string): void {
-  routeInfo.textContent = text;
-}
+const sameArea = (a: Area, b: Area) => a.postal === b.postal && a.lat === b.lat && a.lon === b.lon;
 
-/** Add places not already in the list. Returns how many were new. */
-function addPlaces(incoming: Place[]): number {
-  let added = 0;
-  for (const place of incoming) {
-    const exists = places.some(
-      (p) => p.pincode === place.pincode && p.lat === place.lat && p.lon === place.lon
-    );
-    if (!exists) {
-      places.push(place);
-      added++;
-    }
-  }
-  return added;
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
 }
 
 async function start(): Promise<void> {
@@ -74,123 +103,263 @@ async function start(): Promise<void> {
   }
   if (mapToken) scheduleRefresh(mapToken.refreshInMs);
 
-  /** Redraw pins and list from the current places array. */
-  function refresh(): void {
-    graphics = places.length ? map.showPlaces(places) : [];
-    if (!places.length) map.clear();
-    map.clearRoute();
-    renderResults();
-  }
-
+  // ---- Search ----
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const query = input.value.trim();
+    const code = input.value.trim();
     input.removeAttribute('aria-invalid');
 
-    if (!PINCODE_PATTERN.test(query)) {
+    if (!POSTAL_PATTERN.test(code)) {
       input.setAttribute('aria-invalid', 'true');
-      setMessage('Enter a 6-digit pincode using numbers only, e.g. 110001.', true);
+      setMessage('Enter a postal code: 3 to 12 letters or digits, e.g. 20170 or SW1A 1AA.', true);
       return;
     }
 
-    setMessage('Searching…', false);
-    let found: Place[];
+    setMessage('Searching…');
+    let found: Area[];
     try {
-      found = await searchPincode(query);
+      found = await searchPostal(code);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Search failed.', true);
       return;
     }
-
     if (found.length === 0) {
-      setMessage(`No places found for pincode ${query}.`, false);
+      setMessage(`No area found for postal code ${code}.`);
       return;
     }
 
-    const added = addPlaces(found);
+    // Show the best match; keep the rest as alternates the user can switch to.
+    const [best, ...rest] = found;
+    let index = areas.findIndex((a) => sameArea(a, best));
+    if (index === -1) {
+      areas.push(best);
+      index = areas.length - 1;
+    }
+    alternates = rest;
+    altFor = index;
+
     setMessage(
-      added ? `Added ${added} place(s) for ${query}.` : `Pincode ${query} is already in the list.`,
-      false
+      rest.length
+        ? `Showing ${best.name}. This code exists in ${rest.length} other place${rest.length > 1 ? 's' : ''} too.`
+        : `Showing ${best.name}.`
     );
     input.value = '';
-    refresh();
+    selectArea(index);
   });
 
   clearBtn.addEventListener('click', () => {
-    places = [];
-    graphics = [];
-    setMessage('', false);
-    refresh();
+    areas = [];
+    alternates = [];
+    altFor = -1;
+    selected = -1;
+    nearby = [];
+    areaPins = [];
+    nearbyPins = [];
+    nearbyRequest++;
+    map.clear();
+    setMessage('');
+    renderAreas();
+    renderNearby();
+    renderRouteForm();
   });
 
-  routeBtn.addEventListener('click', async () => {
-    const from = places[Number(fromSelect.value)];
-    const to = places[Number(toSelect.value)];
-    if (!from || !to) return;
-    if (from === to) {
-      setRouteInfo('Pick two different places.');
-      return;
-    }
+  // ---- Areas ----
+  function selectArea(index: number): void {
+    selected = index;
+    const area = areas[index];
+    areaPins = map.showAreas(areas, selected);
+    map.clearRoute();
+    routeInfo.textContent = '';
+    map.zoomToArea(area);
+    renderAreas();
+    void loadNearby();
+  }
 
-    setRouteInfo('Calculating route…');
+  function renderAreas(): void {
+    areasSection.hidden = areas.length === 0;
+    areasList.replaceChildren();
+    areas.forEach((area, i) => {
+      const li = el('li');
+      const button = el('button', `item${i === selected ? ' active' : ''}`);
+      button.type = 'button';
+      button.append(
+        el('strong', undefined, area.name),
+        el('span', undefined, [area.country, `Postal code ${area.postal}`].filter(Boolean).join(' · '))
+      );
+      button.addEventListener('click', () => selectArea(i));
+      li.appendChild(button);
+
+      // Same code in other countries: collapsed, so it does not bury the nearby list.
+      if (i === selected && i === altFor && alternates.length) {
+        const details = el('details', 'alternates');
+        details.appendChild(
+          el('summary', undefined, `Not the right ${area.postal}? ${alternates.length} other match${alternates.length > 1 ? 'es' : ''}`)
+        );
+        alternates.forEach((alt, altIndex) => {
+          const pick = el('button', 'item');
+          pick.type = 'button';
+          pick.append(el('strong', undefined, alt.name), el('span', undefined, alt.country));
+          pick.addEventListener('click', () => {
+            // Swap: the alternate becomes the area, the old area becomes an alternate.
+            alternates[altIndex] = areas[i];
+            areas[i] = alt;
+            setMessage(`Showing ${alt.name}.`);
+            selectArea(i);
+          });
+          details.appendChild(pick);
+        });
+        li.appendChild(details);
+      }
+      areasList.appendChild(li);
+    });
+  }
+
+  // ---- Nearby places ----
+  CATEGORIES.forEach(({ key, label }) => {
+    const chip = el('button', 'chip', label);
+    chip.type = 'button';
+    chip.dataset.key = key;
+    chip.addEventListener('click', () => {
+      if (category === key) return;
+      category = key;
+      void loadNearby();
+    });
+    chips.appendChild(chip);
+  });
+
+  async function loadNearby(): Promise<void> {
+    const area = areas[selected];
+    if (!area) return;
+    const requestId = ++nearbyRequest;
+    const cacheKey = `${area.lat},${area.lon},${category}`;
+
+    chips.querySelectorAll<HTMLButtonElement>('.chip').forEach((chip) => {
+      const on = chip.dataset.key === category;
+      chip.classList.toggle('active', on);
+      chip.setAttribute('aria-pressed', String(on));
+    });
+    nearbySection.hidden = false;
+    nearbyTitle.textContent = `Nearby ${area.postal}`;
+
+    let places = nearbyCache.get(cacheKey);
+    if (!places) {
+      nearby = [];
+      nearbyPins = map.showNearby([]);
+      renderNearby('Loading nearby places…');
+      try {
+        places = await getNearby(area, category);
+        nearbyCache.set(cacheKey, places);
+      } catch (err) {
+        if (requestId !== nearbyRequest) return;
+        renderNearby(err instanceof Error ? err.message : 'Could not load nearby places.', true);
+        renderRouteForm();
+        return;
+      }
+    }
+    if (requestId !== nearbyRequest) return; // a newer request superseded this one
+
+    nearby = places;
+    nearbyPins = map.showNearby(nearby);
+    map.zoomToPlaces(area, nearby);
+    renderNearby(nearby.length ? '' : `Nothing found within ${area.radiusKm} km for this filter.`);
+    renderRouteForm();
+  }
+
+  function renderNearby(note = '', isError = false): void {
+    if (selected === -1) nearbySection.hidden = true;
+    nearbyMessage.textContent = note;
+    nearbyMessage.classList.toggle('info', !isError);
+    // The service returns at most 50, nearest first.
+    nearbyCount.textContent = !nearby.length
+      ? ''
+      : nearby.length >= 50
+        ? '50 nearest'
+        : `${nearby.length} within ${areas[selected]?.radiusKm} km`;
+    nearbyList.replaceChildren();
+
+    nearby.forEach((place, i) => {
+      const li = el('li', 'place');
+      const button = el('button', 'item');
+      button.type = 'button';
+      button.append(
+        el('strong', undefined, place.name),
+        el('span', undefined, [place.type, `${place.distanceKm} km`].filter(Boolean).join(' · ')),
+        el('span', undefined, place.address)
+      );
+      button.addEventListener('click', () => {
+        const pin = nearbyPins[i];
+        if (pin) void map.focus(pin);
+      });
+
+      const go = el('button', 'ghost', 'Route');
+      go.type = 'button';
+      go.title = `Route from ${areas[selected]?.postal} to ${place.name}`;
+      go.addEventListener('click', () => {
+        const from = areas[selected];
+        if (from) void runRoute({ ...from, label: from.name }, { ...place, label: place.name });
+      });
+
+      li.append(button, go);
+      nearbyList.appendChild(li);
+    });
+  }
+
+  // ---- Route ----
+  function renderRouteForm(): void {
+    routePoints = [
+      ...areas.map((a) => ({ lat: a.lat, lon: a.lon, label: `Area: ${a.name}` })),
+      ...nearby.map((p) => ({ lat: p.lat, lon: p.lon, label: p.name }))
+    ];
+    routeSection.hidden = routePoints.length < 2;
+
+    const keepFrom = fromSelect.value;
+    fromSelect.replaceChildren();
+    toSelect.replaceChildren();
+    routePoints.forEach((point, i) => {
+      fromSelect.add(new Option(point.label, String(i)));
+      toSelect.add(new Option(point.label, String(i)));
+    });
+    // Default: from the selected area to the nearest place (or the next area).
+    fromSelect.value = selected >= 0 ? String(selected) : keepFrom || '0';
+    const firstOther = routePoints.findIndex((_, i) => String(i) !== fromSelect.value && i >= areas.length);
+    toSelect.value = String(firstOther !== -1 ? firstOther : fromSelect.value === '0' ? 1 : 0);
+  }
+
+  async function runRoute(from: RoutePoint, to: RoutePoint): Promise<void> {
+    routeSection.hidden = false;
+    routeInfo.textContent = 'Calculating route…';
     routeBtn.disabled = true;
     try {
       const route = await getRoute(from, to);
       map.showRoute(route.paths);
       const parts: string[] = [];
       if (route.kilometers !== null) parts.push(`${route.kilometers.toFixed(1)} km`);
-      if (route.minutes !== null) parts.push(`${Math.round(route.minutes)} min`);
-      setRouteInfo(`${from.name} → ${to.name}${parts.length ? `: ${parts.join(', ')}` : ''}`);
+      if (route.minutes !== null) parts.push(`${Math.round(route.minutes)} min drive`);
+      routeInfo.textContent = `${from.label.replace(/^Area: /, '')} → ${to.label.replace(/^Area: /, '')}${
+        parts.length ? `: ${parts.join(', ')}` : ''
+      }`;
+      routeInfo.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     } catch (err) {
-      setRouteInfo(err instanceof Error ? err.message : 'Route failed.');
+      routeInfo.textContent = err instanceof Error ? err.message : 'Route failed.';
     } finally {
       routeBtn.disabled = false;
     }
-  });
-
-  function renderResults(): void {
-    resultsList.replaceChildren();
-    resultsCount.textContent = places.length ? `${places.length} place(s)` : '';
-    fromSelect.replaceChildren();
-    toSelect.replaceChildren();
-
-    places.forEach((place, i) => {
-      const li = document.createElement('li');
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'result';
-
-      const title = document.createElement('strong');
-      title.textContent = place.name;
-      const meta = document.createElement('span');
-      meta.textContent = place.address || `${place.pincode}`;
-      button.append(title, meta);
-
-      button.addEventListener('click', () => {
-        const graphic: Graphic | undefined = graphics[i];
-        if (graphic) void map.focus(graphic);
-      });
-      li.appendChild(button);
-      resultsList.appendChild(li);
-
-      fromSelect.add(new Option(`${place.name} (${place.pincode})`, String(i)));
-      toSelect.add(new Option(`${place.name} (${place.pincode})`, String(i)));
-    });
-
-    const hasTwo = places.length >= 2;
-    clearBtn.disabled = places.length === 0;
-    fromSelect.disabled = !hasTwo;
-    toSelect.disabled = !hasTwo;
-    routeBtn.disabled = !hasTwo;
-    if (hasTwo) {
-      toSelect.selectedIndex = 1;
-      setRouteInfo('');
-    } else {
-      setRouteInfo(places.length ? 'Add one more pincode to route.' : '');
-    }
   }
 
-  renderResults();
+  routeBtn.addEventListener('click', () => {
+    const from = routePoints[Number(fromSelect.value)];
+    const to = routePoints[Number(toSelect.value)];
+    if (!from || !to) return;
+    if (from === to) {
+      routeInfo.textContent = 'Pick two different points.';
+      return;
+    }
+    void runRoute(from, to);
+  });
+
+  renderAreas();
+  renderNearby();
+  renderRouteForm();
 }
 
 void start();

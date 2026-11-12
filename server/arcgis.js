@@ -6,6 +6,22 @@ const GEOCODE_URL =
 const ROUTE_URL =
   'https://route-api.arcgis.com/arcgis/rest/services/World/Route/NAServer/Route_World/solve';
 
+// Nearby-place filters offered to the client, mapped to ArcGIS geocoder POI
+// categories. The client sends only the key, never a raw category string.
+export const NEARBY_CATEGORIES = {
+  all: 'Food,Hotel,Grocery,Pharmacy,ATM,Gas Station',
+  restaurants: 'Food',
+  hotels: 'Hotel',
+  grocery: 'Grocery',
+  pharmacies: 'Pharmacy',
+  atms: 'ATM',
+  fuel: 'Gas Station',
+  hospitals: 'Hospital',
+  things: 'Arts and Entertainment'
+};
+
+const MAX_RADIUS_KM = 10;
+
 export class UpstreamError extends Error {
   constructor(message, status = 502) {
     super(message);
@@ -38,17 +54,85 @@ async function readJson(res) {
   return data;
 }
 
+const normalizePostal = (s) => String(s ?? '').replace(/[\s-]/g, '').toUpperCase();
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad;
+  const dLon = (lon2 - lon1) * rad;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(a));
+}
+
 /**
- * Geocode an Indian pincode. Returns candidates whose Postal attribute
- * matches the pincode, shaped as { name, pincode, address, lat, lon }.
- * Note: the geocoder returns address matches, not every POI in the pincode.
+ * Look up a postal code in any country. The same code can exist in several
+ * countries (20170 is in the USA, France, Spain, ...), so this returns every
+ * match and the user picks one.
+ *
+ * Each area: { name, postal, country, lat, lon, radiusKm }.
+ * radiusKm comes from the area's extent and sizes the nearby search.
  */
-export async function geocodePincode(pincode) {
+export async function geocodePostal(code) {
   const params = new URLSearchParams({
-    SingleLine: `${pincode}, India`,
-    countryCode: 'IND',
-    maxLocations: '25',
-    outFields: 'Postal,PlaceName,City,Region',
+    SingleLine: code,
+    category: 'Postal',
+    maxLocations: '8',
+    outFields: 'Postal,CntryName,City,Region',
+    f: 'json',
+    token: serviceKey()
+  });
+
+  const data = await readJson(await fetch(`${GEOCODE_URL}?${params}`));
+  const wanted = normalizePostal(code);
+  const candidates = data.candidates ?? [];
+
+  // Prefer exact postal matches; fall back to whatever the geocoder found.
+  const exact = candidates.filter((c) => normalizePostal(c.attributes?.Postal) === wanted);
+  const chosen = exact.length ? exact : candidates;
+
+  return chosen.map((c) => {
+    const lat = c.location.y;
+    const lon = c.location.x;
+    let radiusKm = 2;
+    if (c.extent) {
+      // Half the extent's diagonal, kept within sane bounds.
+      const half = haversineKm(c.extent.ymin, c.extent.xmin, c.extent.ymax, c.extent.xmax) / 2;
+      radiusKm = Math.min(MAX_RADIUS_KM, Math.max(1, half));
+    }
+    return {
+      name: c.address,
+      postal: c.attributes?.Postal || code,
+      country: c.attributes?.CntryName || '',
+      lat,
+      lon,
+      radiusKm: Math.round(radiusKm * 10) / 10
+    };
+  });
+}
+
+/**
+ * Places of interest around a point, nearest first.
+ * Each place: { name, type, address, phone, lat, lon, distanceKm }.
+ */
+export async function nearbyPlaces({ lat, lon, radiusKm, category }) {
+  const poiCategory = NEARBY_CATEGORIES[category];
+  if (!poiCategory) {
+    throw new UpstreamError('Unknown category.', 400);
+  }
+  const r = Math.min(MAX_RADIUS_KM, Math.max(0.5, radiusKm));
+
+  // Bounding box of the search circle, in degrees.
+  const dLat = r / 111.32;
+  const dLon = r / (111.32 * Math.max(0.1, Math.cos((lat * Math.PI) / 180)));
+
+  const params = new URLSearchParams({
+    category: poiCategory,
+    location: `${lon},${lat}`,
+    searchExtent: `${lon - dLon},${lat - dLat},${lon + dLon},${lat + dLat}`,
+    maxLocations: '50',
+    outFields: 'PlaceName,Place_addr,Type,Phone',
     f: 'json',
     token: serviceKey()
   });
@@ -56,15 +140,17 @@ export async function geocodePincode(pincode) {
   const data = await readJson(await fetch(`${GEOCODE_URL}?${params}`));
 
   return (data.candidates ?? [])
-    .filter((c) => c.attributes?.Postal === pincode)
     .map((c) => ({
-      name: c.attributes.PlaceName || c.address,
-      pincode,
-      address: c.address,
+      name: c.attributes?.PlaceName || c.address,
+      type: c.attributes?.Type || '',
+      address: c.attributes?.Place_addr || c.address,
+      phone: c.attributes?.Phone || '',
       lat: c.location.y,
       lon: c.location.x,
-      score: c.score
-    }));
+      distanceKm: Math.round(haversineKm(lat, lon, c.location.y, c.location.x) * 100) / 100
+    }))
+    .filter((p) => p.distanceKm <= r)
+    .sort((a, b) => a.distanceKm - b.distanceKm);
 }
 
 /**
